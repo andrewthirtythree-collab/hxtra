@@ -1,9 +1,14 @@
-"""More snapshots: pressing the lit snapshot footswitch again flips between snapshots 1-3 and 4-6 (src/m4/more_snapshots.s); in
-4-6 the snapshot icon at the top right and the footswitch labels show 4, 5 or 6. Once a preset has a bank B, the next and previous snapshot
-footswitches and MIDI CC 69 run through all six: next on 3 goes to 4, next on 6 to 1, previous on 1 to 6, previous on 4 to 3.
-MIDI CC 69's values 0..2 select snapshots 1..3 and 3..5 snapshots 4..6, from either bank."""
+"""More snapshots: snapshots 4-6 (src/m4/more_snapshots.s). MIDI CC 69's values 0..2 select snapshots 1..3 and 3..5 snapshots 4..6,
+from either bank. In Snapshot mode the three footswitches select 1-3 or 4-6, as Global Settings > Footswitches > Snapshots FS1-3 says;
+pressing the lit one does what Reselect Snapshot says, as stock. In 4-6 the snapshot icon at the top right and the footswitch labels
+show 4, 5 or 6. Once a preset has a bank B, the next and previous snapshot footswitches and MIDI CC 69 run through all six: next on 3
+goes to 4, next on 6 to 1, previous on 1 to 6, previous on 4 to 3."""
+from features import Setting
 
 FLAG = 'HX_MORE_SNAPSHOTS'
+MENU = 'Footswitches'
+SETTINGS = (Setting('fs_bank', b'FS1-3\nSnapshots', (b'1-3', b'4-6')),   # which snapshots the snapshot footswitches select
+            Setting('latch', b'FS1-3\nSmrtLatch', (b'Off', b'On'), default=1))  # a held snapshot footswitch goes back on release
 
 SELECT = 0x28de2f90                 # (manager, index): recalls a snapshot
 # The tail calls of select (b.w) a footswitch press reaches: the footswitch functions' (0x28dd14a0: 14 snapshot k for footswitch k,
@@ -28,6 +33,9 @@ FILE_CALLS = ((0x28df20f2, 0x28deacf4, 'snaps_file_serialize'), (0x28df210a, 0x2
               (0x28deb53c, 0x28def9a8, 'snaps_file_section'))
 TOP_PAINT_LIT, TOP_PAINT = 0x28d96d90, 0x28dca359              # the top view's paint (preset number, name, snapshot icon), as registered
 HOME_PAINT_LIT, HOME_PAINT = 0x28d96e28, 0x28dc8d39            # the Home view's paint (footswitch labels), as registered
+# Smart Latch: the footswitch event handler (event, object), as registered; tools/features/long_press.py owns its entry, so this
+# chains its pointer
+FS_HANDLER_LIT, FS_HANDLER = 0x28dd293c, 0x28dd1979
 
 
 def apply(p):
@@ -49,3 +57,4 @@ def apply(p):
         p.chain_entry(fn, stock, before=m['snaps_saving'], after=m['snaps_saved'])
     p.chain_ptr(TOP_PAINT_LIT, TOP_PAINT, after=m['snaps_paint'])
     p.chain_ptr(HOME_PAINT_LIT, HOME_PAINT, after=m['snaps_home_paint'])
+    p.chain_ptr(FS_HANDLER_LIT, FS_HANDLER, before=m['snaps_fs_before'], after=m['snaps_fs_after'])

@@ -32,6 +32,8 @@ LABEL_X, LABEL_Y = (53, 160, 267), 100
 WIDGET_LOCK, WIDGET_UNLOCK, REDRAW, FILL, TEXT = 0x28e24970, 0x28e24ae8, 0x28db8508, 0x100017e8, 0x28db7aa4
 REC, RECS, CUR, PREV, BUSY = 0x260, 0xc, 0x743, 0x744, 0x9a9
 VALID, NAME = 0x24b, 0x255            # in a record: set once it holds a sound; its name, 11 bytes
+CLOCK, EVENT, OBJ = 0x28da6458, 0x28700400, 0x28700500   # the µs clock; a footswitch event and the handler's object
+GET_VALUE = 0x28e1f844                # the stock settings getter: Snapshots FS1-3, None while unset (it reads its default, 1-3)
 
 
 def record(i):
@@ -71,6 +73,12 @@ class Manager:
         self.m.stub(PRESET_FLAG, lambda m: m.reg('r0', self.flag))
         self.m.stub(SECTION_READ, self._section)
         self.events = []
+        self.fs_bank = None
+        self.latch = None
+        self.stock_selects_on = 2                          # Snapshot mode: the release
+        self.now = 0x7fff0000                              # near a wrap of the µs clock
+        self.m.stub(GET_VALUE, self._get_value)
+        self.m.stub(CLOCK, lambda m: m.reg('r0', self.now & 0xffffffff))
         self.m.stub(WIDGET_LOCK, lambda m: self.events.append('widget lock'))
         self.m.stub(WIDGET_UNLOCK, lambda m: self.events.append('widget unlock'))
         self.m.stub(REDRAW, lambda m: self.events.append(('redraw', m.reg('r0'), m.reg('r1'))))
@@ -152,9 +160,47 @@ class Manager:
     def name(self, i):
         return self.rec(i)[NAME:NAME + 11].rstrip(b'\0')
 
+    def _get_value(self, m):
+        value = {IDS['more_snapshots.fs_bank']: self.fs_bank, IDS['more_snapshots.latch']: self.latch}[m.reg('r0')]
+        if value is None:
+            m.reg('r0', -1)
+        else:
+            m.write(m.reg('r1'), struct.pack('<II', 0, value))
+            m.reg('r0', 0)
+
+    def event(self, k, kind):
+        self.m.write(EVENT, bytes([1, 12 + k, 0, 0]) + struct.pack('<I', kind))
+        self.call('snaps_fs_before', EVENT, OBJ)
+        if kind == self.stock_selects_on and self.m.read(FS_FUNCTIONS + 2 * k, 1)[0] == 14:
+            self.press(k)
+        self.call('snaps_fs_after', EVENT, OBJ)
+
+    def fs(self, k, held_ms, function=14):
+        """Footswitch k (0..2) pressed for held_ms, as the event handler runs it: Smart Latch's before and after around the stock
+        handler, which runs the snapshot function (snapshot k, through snaps_select) on the release, as Snapshot mode does (or on
+        the press, with stock_selects_on 1). Footswitch k's function byte is `function` (14 snapshot k, as Snapshot mode sets it)."""
+        self.m.write(FS_FUNCTIONS + 2 * k, bytes([function]))
+        self.event(k, 1)
+        self.held = self.snapshot()
+        self.now += int(held_ms * 1000)
+        self.during_hold()
+        self.event(k, 2)
+
+    def during_hold(self):
+        pass
+
+    def snapshot(self):
+        """The current snapshot, 0..5."""
+        return 3 * self.bank_b_live() + self.cur()
+
     def press(self, i):
         """The footswitch for snapshot i+1 (i 0..2), as the snapshot action calls select."""
         return self.m.call(self.at + self.sym['snaps_select'], MGR, i)
+
+    def flip(self, i):
+        """Snapshots FS1-3 set to the bank that is not live, then footswitch i: snapshot i of the other bank."""
+        self.fs_bank = 0 if self.bank_b_live() else 1
+        return self.press(i)
 
     def call(self, sym, *args):
         return self.m.call(self.at + self.sym[sym], *args)
@@ -179,8 +225,9 @@ class Manager:
         return self.call('snaps_cc_select', MGR, value)
 
     def go(self, i):
-        """Snapshot i in the live bank: a press unless it's lit, which would flip."""
+        """Snapshot i in the live bank: Snapshots FS1-3 on the live bank and a press, unless it's lit."""
         if self.cur() != i:
+            self.fs_bank = int(self.bank_b_live())
             self.press(i)
         self.selects.clear()
 
@@ -224,7 +271,7 @@ def test_the_lit_snapshot_again_flips_to_bank_b(mgr, lit):
     """Bank B's three records start as defaults named SNAPSHOT 4-6; select comes from the sound being left, so the new one takes it."""
     mgr.m.u8(MGR + CUR, lit)
     mgr.m.u8(MGR + PREV, 2 - lit)
-    assert mgr.press(lit) == 1
+    assert mgr.flip(lit) == 1
     assert mgr.inits == [b'SNAPSHOT 4', b'SNAPSHOT 5', b'SNAPSHOT 6']
     (new, old, old_rec, new_rec), = mgr.selects
     assert new == lit and old != lit, 'a select of another index, so it recalls rather than reselects'
@@ -237,26 +284,74 @@ def test_the_lit_snapshot_again_flips_to_bank_b(mgr, lit):
 
 
 def test_a_second_press_flips_back_with_both_banks_kept(mgr):
-    mgr.press(0)
+    mgr.flip(0)
     edited = bytearray(mgr.rec(0))
     edited[5] = 0x55                                    # an edit on snapshot 4
     mgr.m.write(record(0), edited)
     mgr.selects.clear()
-    mgr.press(0)
+    mgr.flip(0)
     (new, old, old_rec, new_rec), = mgr.selects
     assert (new, old_rec, new_rec) == (0, bytes(edited), bank_a(0)), 'snapshot 1 again, from snapshot 4 with its edit'
     assert [mgr.rec(i) for i in range(3)] == [bank_a(i) for i in range(3)]
-    mgr.press(0)
+    mgr.flip(0)
     assert mgr.rec(0) == bytes(edited), 'snapshot 4 keeps its edit'
     assert mgr.inits == [b'SNAPSHOT 4', b'SNAPSHOT 5', b'SNAPSHOT 6'], 'bank B is set up once a preset'
 
 
 def test_another_switch_in_bank_b_selects_within_it(mgr):
-    mgr.press(0)
+    mgr.flip(0)
     mgr.selects.clear()
     mgr.press(2)
     (new, old, _, _), = mgr.selects
     assert (new, old) == (2, 0) and mgr.name(2) == b'SNAPSHOT 6'
+
+
+@pytest.mark.parametrize('fs_bank', [None, 0])
+@pytest.mark.parametrize('lit', [0, 1, 2])
+def test_the_lit_snapshot_again_reselects_as_stock(mgr, fs_bank, lit):
+    """Snapshots FS1-3 on 1-3 (or unset): a press of the lit footswitch goes to select with its own index, for Reselect Snapshot."""
+    mgr.fs_bank = fs_bank
+    mgr.m.u8(MGR + CUR, lit)
+    mgr.press(lit)
+    assert [s[0] for s in mgr.selects] == [lit] and mgr.inits == [] and not mgr.bank_b_live()
+    assert [mgr.rec(i) for i in range(3)] == [bank_a(i) for i in range(3)]
+
+
+@pytest.mark.parametrize('i', [0, 1, 2])
+def test_snapshots_fs_4_6_takes_bank_a_presses_to_bank_b(mgr, i):
+    """Snapshots FS1-3 on 4-6: footswitch i in bank A selects snapshot i + 4, made from the sound being left; in bank B it stays."""
+    mgr.fs_bank = 1
+    assert mgr.press(i) == 1
+    assert mgr.bank_b_live() and mgr.cur() == i and mgr.inits == [b'SNAPSHOT 4', b'SNAPSHOT 5', b'SNAPSHOT 6']
+    (new, _, old_rec, _), = mgr.selects
+    assert new == i and old_rec == bank_a(0), 'select comes from snapshot 1, the sound being left'
+    mgr.selects.clear()
+    mgr.press(i)
+    assert [s[0] for s in mgr.selects] == [i] and mgr.bank_b_live(), 'the lit one again: stock, within bank B'
+    mgr.press((i + 1) % 3)
+    assert mgr.bank_b_live() and mgr.cur() == (i + 1) % 3
+
+
+def test_snapshots_fs_1_3_takes_bank_b_presses_back_to_bank_a(mgr):
+    """In bank B, as CC 69 left it, with Snapshots FS1-3 on 1-3: footswitch 3 selects snapshot 3."""
+    mgr.cc(3)
+    assert mgr.bank_b_live()
+    mgr.selects.clear()
+    mgr.fs_bank = 0
+    mgr.press(2)
+    assert not mgr.bank_b_live() and mgr.cur() == 2
+    assert [mgr.rec(i)[:VALID] for i in range(3)] == [bank_a(i)[:VALID] for i in range(3)]
+
+
+@pytest.mark.parametrize('fs_bank', [0, 1])
+def test_next_and_previous_within_a_bank_ignore_the_setting(mgr, fs_bank):
+    """A footswitch next or previous that stays in the bank is not a press of footswitch 1..3: it stays in the live bank."""
+    mgr.fs_bank = fs_bank
+    mgr.step(+1)
+    assert mgr.cur() == 1 and not mgr.bank_b_live()
+    mgr.cc(4)
+    mgr.step(-1)
+    assert mgr.cur() == 0 and mgr.bank_b_live()
 
 
 @pytest.mark.parametrize('index', [3, 8, 0xff])
@@ -268,18 +363,18 @@ def test_an_index_above_2_goes_to_select(mgr, index):
 
 def test_while_select_is_held_off_the_press_goes_to_select(mgr):
     mgr.m.u8(MGR + BUSY, 1)
-    mgr.press(0)
+    mgr.flip(0)
     assert mgr.held == [0] and mgr.selects == [] and mgr.inits == []
     assert [mgr.rec(i) for i in range(3)] == [bank_a(i) for i in range(3)]
 
 
 def test_a_preset_load_starts_bank_a_and_a_new_bank_b(mgr):
-    mgr.press(0)
+    mgr.flip(0)
     mgr.call('snaps_loaded', MGR, 0, 0, 0)
     for i in range(3):                                  # the parser fills the records with the new preset
         mgr.m.write(record(i), bank_a(i))
     mgr.inits.clear()
-    mgr.press(0)
+    mgr.flip(0)
     assert mgr.inits == [b'SNAPSHOT 4', b'SNAPSHOT 5', b'SNAPSHOT 6']
     assert mgr.name(0) == b'SNAPSHOT 4'
 
@@ -289,7 +384,7 @@ def test_a_save_in_bank_b_recalls_bank_a_for_the_write(mgr, busy):
     """A load takes the preset's live values for its current snapshot, so the write must run with bank A's sound live: select
     recalls snapshot 1 from snapshot 4's sound, the writer runs, then select recalls snapshot 4. Select is let run for these two,
     as the load path lets its own, and its hold is put back."""
-    mgr.press(0)
+    mgr.flip(0)
     edited = bytearray(mgr.rec(0))
     edited[5] = 0x55
     mgr.m.write(record(0), edited)
@@ -306,7 +401,7 @@ def test_a_save_in_bank_b_recalls_bank_a_for_the_write(mgr, busy):
     assert [(new, old_rec, new_rec) for new, _, old_rec, new_rec in mgr.selects] == [(0, bank_a(0), bytes(edited))]
     assert mgr.read_busy() == busy and mgr.held == [] and mgr.cur() == 0
     mgr.m.u8(MGR + BUSY, 0)
-    mgr.press(0)
+    mgr.flip(0)
     assert [mgr.rec(i) for i in range(3)] == [bank_a(i) for i in range(3)], 'still flips back after a save'
 
 
@@ -317,7 +412,7 @@ def test_a_save_in_bank_a_changes_nothing(mgr):
 
 
 def test_a_preset_load_during_a_save_does_not_flip_after_it(mgr):
-    mgr.press(0)
+    mgr.flip(0)
     mgr.call('snaps_saving', STREAM, HEADER)
     mgr.call('snaps_loaded', MGR, 0, 0, 0)
     mgr.call('snaps_saved', STREAM, HEADER)
@@ -351,28 +446,28 @@ def test_bank_a_paints_nothing(mgr):
 def test_bank_b_draws_its_numbers_over_the_icon_and_the_labels(mgr, lit):
     mgr.m.u8(MGR + CUR, lit)
     mgr.events.clear()
-    mgr.press(lit)
+    mgr.flip(lit)
     assert mgr.events[-1] == ('redraw', 0, 1), 'the flip asks for a paint, which draws the numbers'
     assert mgr.paint() == (top(str(lit + 4)), [])
     assert mgr.paint('home') == (labels(lit), [])
 
 
 def test_the_numbers_follow_the_snapshot_within_bank_b(mgr):
-    mgr.press(0)
+    mgr.flip(0)
     mgr.press(2)
     assert mgr.paint() == (top('6'), [])
     assert mgr.paint('home') == (labels(2), [])
 
 
 def test_an_edited_snapshots_red_icon_gets_a_white_number(mgr):
-    mgr.press(0)
+    mgr.flip(0)
     mgr.icon_style = 'red'
     assert mgr.paint() == (top('4'), [])
 
 
 def test_hidden_or_other_images_get_no_number(mgr):
     """A label shows text instead of a camera once its snapshot is renamed; only a visible stock camera gets a number."""
-    mgr.press(0)
+    mgr.flip(0)
     mgr.m.u8(ICON + 0x1d, 0)
     assert mgr.paint() == (['widget lock', 'widget unlock'], [])
     mgr.m.u8(LABELS + 0x1d, 0)
@@ -383,7 +478,7 @@ def test_hidden_or_other_images_get_no_number(mgr):
 @pytest.mark.parametrize('functions', [[2, 2, 2], [2, 2, 1]], ids=['stomp', 'stomp with TAP'])
 def test_bank_b_in_another_footswitch_mode_leaves_the_labels_alone(mgr, functions):
     """The labels keep their last cameras outside Snapshot mode; numbering them filled black boxes over the stomp or preset names."""
-    mgr.press(0)
+    mgr.flip(0)
     mgr.mode(functions)
     assert mgr.paint('home') == ([], [])
     assert mgr.paint() == (top('4'), []), 'the top icon still shows the bank'
@@ -392,29 +487,29 @@ def test_bank_b_in_another_footswitch_mode_leaves_the_labels_alone(mgr, function
 
 
 def test_back_in_bank_a_the_cameras_are_drawn_again(mgr):
-    mgr.press(0)
-    mgr.press(0)
-    assert mgr.paint() == (['widget lock', 'widget unlock', ('redraw', 0, 1)], [0]), 'its node marked, and a paint to draw it'
+    mgr.flip(0)
+    mgr.flip(0)
+    assert mgr.paint() == (['widget lock', 'widget unlock', ('redraw', 1, 1)], [0]), 'its node marked, and a paint to draw it'
     assert mgr.paint() == ([], []), 'once'
-    assert mgr.paint('home') == (['widget lock', 'widget unlock', ('redraw', 0, 1)], [1, 2, 3]), 'the labels, once each paint'
+    assert mgr.paint('home') == (['widget lock', 'widget unlock', ('redraw', 1, 1)], [1, 2, 3]), 'the labels, once each paint'
     assert mgr.paint('home') == ([], [])
 
 
 def test_a_preset_load_in_bank_b_draws_the_cameras_again(mgr):
-    mgr.press(0)
+    mgr.flip(0)
     mgr.call('snaps_loaded', MGR, 0, 0, 0)
-    assert mgr.paint() == (['widget lock', 'widget unlock', ('redraw', 0, 1)], [0])
-    assert mgr.paint('home') == (['widget lock', 'widget unlock', ('redraw', 0, 1)], [1, 2, 3])
+    assert mgr.paint() == (['widget lock', 'widget unlock', ('redraw', 1, 1)], [0])
+    assert mgr.paint('home') == (['widget lock', 'widget unlock', ('redraw', 1, 1)], [1, 2, 3])
     mgr.call('snaps_loaded', MGR, 0, 0, 0)
     assert mgr.paint() == ([], []) and mgr.paint('home') == ([], []), 'a load in bank A leaves them alone'
 
 
 def test_a_save_in_bank_b_keeps_the_numbers(mgr):
     """The save's flip to bank A marks the cameras for a redraw; the next paint draws bank B's numbers over them again."""
-    mgr.press(0)
+    mgr.flip(0)
     mgr.call('snaps_saving', STREAM, HEADER)
     mgr.call('snaps_saved', STREAM, HEADER)
-    assert mgr.paint() == (top('4') + [('redraw', 0, 1)], [0])
+    assert mgr.paint() == (top('4') + [('redraw', 1, 1)], [0])
     assert mgr.paint() == (top('4'), [])
 
 
@@ -429,8 +524,8 @@ def entries(rec, at, size, keys):
 def test_a_flip_matches_the_incoming_banks_entries_to_the_outgoing_ones(mgr):
     """A controller assigned while bank B waited is in bank A's records only: on the flip, bank B takes it with bank A's value,
     and keeps its own values for the controllers both have. Footswitch entries the same."""
-    mgr.press(0)                                        # bank B, made from bank A
-    mgr.press(0)                                        # back to A; B waits in the shadow
+    mgr.flip(0)                                        # bank B, made from bank A
+    mgr.flip(0)                                        # back to A; B waits in the shadow
     b0 = mgr.rec(0)
     for i in range(3):
         rec = entries(mgr.rec(i), 0x28, 7, [(3, 0x30 + i), (5, 0x50 + i)])
@@ -441,7 +536,7 @@ def test_a_flip_matches_the_incoming_banks_entries_to_the_outgoing_ones(mgr):
         mgr.m.write(shadow + REC * i, entries(rec, 0x1e8, 9, [(2, 0xa0 + i)]))
     mgr.m.u8(MGR + CONTROLLERS, 2)
     mgr.m.u8(MGR + SWITCHES, 1)
-    mgr.press(0)
+    mgr.flip(0)
     for i in range(3):
         rec = mgr.rec(i)
         assert rec[0x28:0x28 + 14] == bytes([3]) + bytes([0x90 + i]) * 6 + bytes([5]) + bytes([0x50 + i]) * 6
@@ -466,14 +561,14 @@ def test_a_preset_file_without_bank_b_stays_stock(mgr):
 
 
 def test_a_preset_file_saved_in_bank_b_gets_bank_b_after_its_map(mgr):
-    mgr.press(0)
+    mgr.flip(0)
     assert appended(mgr) == head() + b''.join(mgr.rec(i) for i in range(3))
 
 
 def test_a_preset_file_saved_in_bank_a_gets_the_waiting_bank_b(mgr):
-    mgr.press(0)
+    mgr.flip(0)
     bank_b = b''.join(mgr.rec(i) for i in range(3))
-    mgr.press(0)
+    mgr.flip(0)
     assert appended(mgr) == head() + bank_b
 
 
@@ -482,7 +577,7 @@ def test_the_maps_count_counts_key_0x64(mgr, flag, count):
     """The serializer writes (flag + 9) | 0x80 up front, flag saying whether key 12 follows; after the TOC's rewrite the file is at
     that byte, which gets one more."""
     mgr.flag = flag
-    mgr.press(0)
+    mgr.flip(0)
     appended(mgr)
     mgr.written.clear()
     mgr.call('snaps_file_toc', STREAM, HEADER)
@@ -505,7 +600,7 @@ def test_a_load_takes_bank_b_from_the_file(mgr, names):
     mgr.call('snaps_loaded', MGR, 0, 0, 0)
     assert mgr.m.read(CODE + mgr.sym['snaps_shadow'], 3 * REC) == records
     mgr.inits.clear()
-    mgr.press(0)
+    mgr.flip(0)
     assert mgr.inits == [] and mgr.rec(0)[:VALID] == records[:VALID], "the file's snapshot 4, not a new one"
 
 
@@ -517,14 +612,14 @@ def test_a_load_without_a_whole_bank_b_starts_bank_b_anew(mgr, section):
     mgr.read_section()
     mgr.call('snaps_loaded', MGR, 0, 0, 0)
     mgr.inits.clear()
-    mgr.press(0)
+    mgr.flip(0)
     assert mgr.inits == [b'SNAPSHOT 4', b'SNAPSHOT 5', b'SNAPSHOT 6']
 
 
 def with_bank_b(mgr):
     """A flip to bank B, each of 4..6 selected so each holds a sound, and back: this preset has a bank B, and bank A is live on
     snapshot 1. Bank B's records."""
-    mgr.press(0)
+    mgr.flip(0)
     mgr.press(1)
     mgr.press(2)
     mgr.press(0)
@@ -533,7 +628,7 @@ def with_bank_b(mgr):
         r[5] = 0xb0 + i                                 # an edit on each of snapshots 4..6
         mgr.m.write(record(i), r)
     bank_b = [mgr.rec(i) for i in range(3)]
-    mgr.press(0)
+    mgr.flip(0)
     mgr.selects.clear()
     mgr.inits.clear()
     return bank_b
@@ -568,7 +663,7 @@ def test_with_bank_b_next_and_previous_cross_into_it(mgr, source, way, start, en
 def test_in_bank_b_next_and_previous_cross_back_to_bank_a(mgr, source, way, start, end):
     """Next on 6 goes to 1, previous on 4 to 3."""
     bank_b = with_bank_b(mgr)
-    mgr.press(0)
+    mgr.flip(0)
     mgr.go(start)
     mgr.step(way, source)
     (new, _, old_rec, new_rec), = mgr.selects
@@ -611,7 +706,7 @@ def test_a_wrap_without_bank_b_is_forgotten(mgr):
     mgr.m.u8(MGR + CUR, 2)
     mgr.step(1)
     mgr.selects.clear()
-    mgr.press(0)
+    mgr.flip(0)
     assert mgr.inits == [b'SNAPSHOT 4', b'SNAPSHOT 5', b'SNAPSHOT 6'] and mgr.bank_b_live(), 'the lit one again still flips'
 
 
@@ -651,7 +746,7 @@ def test_cc_69_3_to_5_from_bank_a_cross_into_bank_b(mgr, start, i):
 @pytest.mark.parametrize('i', [0, 1, 2])
 def test_cc_69_0_to_2_from_bank_b_cross_back_to_bank_a(mgr, start, i):
     bank_b = with_bank_b(mgr)
-    mgr.press(0)
+    mgr.flip(0)
     mgr.go(start)
     mgr.cc(i)
     (new, _, old_rec, new_rec), = mgr.selects
@@ -662,7 +757,7 @@ def test_cc_69_0_to_2_from_bank_b_cross_back_to_bank_a(mgr, start, i):
 @pytest.mark.parametrize('start, i', [(0, 1), (0, 2), (1, 0), (2, 1)])
 def test_cc_69_3_to_5_in_bank_b_select_within_it(mgr, start, i):
     with_bank_b(mgr)
-    mgr.press(0)
+    mgr.flip(0)
     mgr.go(start)
     mgr.cc(3 + i)
     assert [(new, old) for new, old, _, _ in mgr.selects] == [(i, start)] and mgr.bank_b_live()
@@ -672,7 +767,7 @@ def test_cc_69_3_to_5_in_bank_b_select_within_it(mgr, start, i):
 def test_cc_69_3_to_5_on_the_lit_snapshot_in_bank_b_stays_stock(mgr, lit):
     """As 0..2 in bank A: select with the current index, which Reselect Snapshot handles, and no flip."""
     with_bank_b(mgr)
-    mgr.press(0)
+    mgr.flip(0)
     mgr.go(lit)
     mgr.cc(3 + lit)
     assert [(new, old) for new, old, _, _ in mgr.selects] == [(lit, lit)] and mgr.bank_b_live()
@@ -705,7 +800,86 @@ def test_a_preset_load_forgets_the_last_presets_bank_b(mgr):
 
 
 def test_feature_flag():
-    assert ms.FLAG == 'HX_MORE_SNAPSHOTS' and not getattr(ms, 'SETTINGS', ())
+    assert ms.FLAG == 'HX_MORE_SNAPSHOTS' and ms.MENU == 'Footswitches'
+    assert [(st.key, st.values, st.default) for st in ms.SETTINGS] == [('fs_bank', (b'1-3', b'4-6'), 0),
+                                                                        ('latch', (b'Off', b'On'), 1)]
+
+
+@pytest.mark.parametrize('stock_on', [2, 1])
+@pytest.mark.parametrize('held_ms, back', [(100, False), (340, False), (400, True), (3000, True)])
+def test_smart_latch_a_held_footswitch_goes_back_on_release(mgr, held_ms, back, stock_on):
+    """Snapshot 1, then footswitch 2 held: snapshot 2 from the press on, and on release snapshot 1 again if held over 350 ms;
+    a tap latches snapshot 2. One select a press, whether the stock selects on the release (Snapshot mode) or the press."""
+    mgr.stock_selects_on = stock_on
+    mgr.fs(1, held_ms)
+    assert mgr.held == 1, 'the press selects'
+    assert mgr.snapshot() == (0 if back else 1)
+    assert [s[0] for s in mgr.selects] == ([1, 0] if back else [1])
+
+
+def test_smart_latch_off_selects_on_the_release_as_stock(mgr):
+    mgr.latch = 0
+    mgr.fs(1, 2000)
+    assert mgr.held == 0 and mgr.snapshot() == 1
+
+
+def test_smart_latch_the_lit_footswitch_is_left_to_the_stock_release(mgr):
+    """Footswitch 1 on snapshot 1: no select on the press; the release's select (Reselect Snapshot's) goes through, once."""
+    mgr.fs(0, 100)
+    assert [s[0] for s in mgr.selects] == [0]
+
+
+def test_smart_latch_a_second_footswitch_cancels_it(mgr):
+    """Footswitch 1 held, then 2 pressed with it (a stock pair): nothing goes back, and the pair's releases select as stock."""
+    mgr.go(2)
+    mgr.m.write(FS_FUNCTIONS, bytes([14, 0, 14, 0, 14]))
+    mgr.event(0, 1)
+    assert mgr.snapshot() == 0
+    mgr.now += 1_000_000
+    mgr.event(1, 1)
+    mgr.event(1, 2)
+    mgr.event(0, 2)
+    assert mgr.snapshot() == 0
+
+
+def test_smart_latch_goes_back_across_the_banks(mgr):
+    """Snapshots FS1-3 on 4-6, on snapshot 2: footswitch 3 held plays snapshot 6, and its release brings back snapshot 2."""
+    mgr.fs(1, 50)
+    mgr.fs_bank = 1
+    mgr.fs(2, 1000)
+    assert mgr.snapshot() == 1 and not mgr.bank_b_live()
+    mgr.fs(2, 50)
+    assert mgr.snapshot() == 5
+    mgr.fs_bank = 0                                         # and back from 6 to 6 across the other way
+    mgr.fs(0, 800)
+    assert mgr.snapshot() == 5 and mgr.bank_b_live()
+
+
+def test_smart_latch_returns_to_a_snapshot_midi_selected(mgr):
+    mgr.cc(4)                                               # snapshot 5, from the MIDI controller
+    mgr.fs_bank = 0
+    mgr.fs(0, 500)
+    assert mgr.snapshot() == 4
+
+
+def test_smart_latch_stays_if_another_snapshot_came_while_held(mgr):
+    """MIDI selects snapshot 3 while footswitch 2 is held: the release leaves it."""
+    mgr.during_hold = lambda: mgr.cc(2)
+    mgr.fs(1, 1000)
+    assert mgr.snapshot() == 2
+
+
+def test_smart_latch_the_lit_footswitch_held_stays(mgr):
+    mgr.fs(0, 1000)
+    assert mgr.snapshot() == 0
+
+
+@pytest.mark.parametrize('function', [2, 1, 7])
+def test_smart_latch_ignores_other_footswitch_functions(mgr, function):
+    """Stomp, TAP, next: not snapshot k, so nothing to go back to (the stand-in stock handler selects nothing either)."""
+    mgr.go(2)
+    mgr.fs(0, 1000, function=function)
+    assert mgr.snapshot() == 2 and [s for s in mgr.selects] == []
 
 
 @pytest.mark.firmware

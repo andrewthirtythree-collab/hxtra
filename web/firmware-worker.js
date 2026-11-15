@@ -68,6 +68,7 @@ var SOURCES = [
   "tools/effects.py",
   "tools/patch_menu.py",
   "tools/patch_click.py",
+  "tools/patch_keygate.py",
   "tools/patch_comp.py",
   "tools/m4asm.py",
   "tools/image_store.py",
@@ -112,6 +113,7 @@ var SOURCES = [
   "src/m4/tuner.s",
   "src/m4/virtual_settings.s",
   "src/sharc/click.asm",
+  "src/sharc/keygate.asm",
   "src/sharc/frame_probe.asm",
 ];
 // The release's M4 code for the features (tools/m4cache.py); a page from a checkout has none, and offers no features.

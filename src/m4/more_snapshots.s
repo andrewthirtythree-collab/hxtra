@@ -1,8 +1,10 @@
-@ more_snapshots.s - snapshots 4 to 6: pressing the lit snapshot footswitch again flips between bank A (snapshots 1-3) and bank B
-@ (4-6). The snapshot manager holds three 0x260-byte records; the other bank waits in snaps_shadow, and a flip swaps the two and
-@ recalls the same footswitch's snapshot through the stock select. tools/features/more_snapshots.py places the hooks.
+@ more_snapshots.s - snapshots 4 to 6, in bank B beside bank A (snapshots 1-3). MIDI CC 69 reaches all six; the snapshot footswitches
+@ select bank A or bank B, as the setting Snapshots FS1-3 says. The snapshot manager holds three 0x260-byte records; the other bank
+@ waits in snaps_shadow, and a flip swaps the two and recalls a snapshot through the stock select. tools/features/more_snapshots.py
+@ places the hooks.
 .syntax unified
 .thumb
+.include "hxtra.inc"
 .equ SELECT, 0x28de2f91             @ (manager, index): recalls a snapshot
 .equ RECORD_INIT, 0x28de14b5        @ (manager, record, name): a record's defaults; takes the manager's lock itself
 .equ LOCK, 0x28e24c01
@@ -36,18 +38,51 @@
 .equ DARK, 0x101010                 @ the digit on a lit camera's white circle; black would be the renderer's transparent
 .equ WRAP, 5                        @ in snaps_data: the select on its way is a next or previous past the bank's end
 .equ VALUE, 2                       @ in WRAP instead: the select on its way is CC 69's value, 0..5
+.equ STEP, 3                        @ in WRAP instead: the select on its way is a footswitch next or previous within the bank
+.equ CLOCK, 0x28da6459              @ () -> µs
+.equ KEY_FS1, 12                    @ footswitch events: {1 key, code, -, -, type}; FS1..FS3 are codes 12..14
+.equ EV_PRESS, 1
+.equ EV_RELEASE, 2
+.equ HOLD_US, 350000                @ Smart Latch: a press held longer than this goes back on release
+.equ L_STATE, 0                     @ in snaps_latch: 0 idle, 1 a snapshot footswitch held
+.equ L_K, 1                         @ the footswitch, 0..2
+.equ L_PREV, 2                      @ the snapshot before the press, 0..5
+.equ L_NOW, 3                       @ the snapshot the press selected, 0..5
+.equ L_TIME, 4                      @ the press's time, µs
+.equ L_SKIP, 8                      @ set while the footswitch's own select (Snapshot mode selects on the release) is to be dropped
 
-snaps_select:                       @ a footswitch press's call of select (manager, index)
+snaps_select:                       @ a footswitch press's call of select (manager, index): snapshot index of the bank the setting picks
+    adr.w r2, snaps_latch               @ Smart Latch selected it on the press already: this release's select does nothing
+    ldrb r3, [r2, #L_SKIP]
+    cbz r3, snaps_select_go
+    movs r3, #0
+    strb r3, [r2, #L_SKIP]
+    movs r0, #0
+    bx lr
+snaps_select_go:
     adr.w r2, snaps_data
     ldrb r3, [r2, #WRAP]
-    cbnz r3, snaps_wrap
+    cmp r3, #STEP
+    beq snaps_step
+    cmp r3, #0
+    bne snaps_wrap
     cmp r1, #2
     bhi snaps_stock
-    ldrb.w r2, [r0, #CUR]
-    cmp r2, r1
-    bne snaps_stock
-    ldrb.w r2, [r0, #BUSY]
-    cbz r2, snaps_flip
+    push {r0, r1, r4, lr}
+    movw r0, #SETTING_MORE_SNAPSHOTS_FS_BANK
+    movs r1, #SETTING_MORE_SNAPSHOTS_FS_BANK_MAX
+    movs r2, #SETTING_MORE_SNAPSHOTS_FS_BANK_DEFAULT
+    bl hxtra_setting_get
+    mov r3, r0                      @ the bank the footswitches select: 0 bank A, 1 bank B
+    pop {r0, r1, r4, lr}
+    adr.w r2, snaps_data
+    ldrb r2, [r2]
+    eors r3, r2                     @ set: that bank is not the live one
+    beq snaps_stock                 @ the live bank: stock, so the lit one again does what Reselect Snapshot says
+    b snaps_cc_cross
+snaps_step:
+    movs r3, #0
+    strb r3, [r2, #WRAP]
 snaps_stock:
     ldr r12, =SELECT
     bx r12
@@ -87,16 +122,18 @@ snaps_value:                        @ (manager, value, snaps_data): 0..2 snapsho
     beq snaps_stock
     b snaps_cc_cross
 
-snaps_next_cur:                    @ in place of footswitch next's read of the current snapshot (manager): marks a wrap past 3 or 6
-    ldrb.w r0, [r0, #CUR]
+snaps_next_cur:                    @ in place of footswitch next's read of the current snapshot (manager): marks a wrap past 3 or 6,
+    ldrb.w r0, [r0, #CUR]           @ else a step within the bank, which select must not take for a press of footswitch 1..3
     cmp r0, #2
     beq snaps_mark
-    bx lr
+    b snaps_mark_step
 
-snaps_prev_cur:                     @ in place of footswitch previous's read: marks a wrap past 1 or 4
+snaps_prev_cur:                     @ in place of footswitch previous's read: marks a wrap past 1 or 4, else a step
     ldrb.w r0, [r0, #CUR]
     cbz r0, snaps_mark
-    bx lr
+snaps_mark_step:
+    movs r2, #STEP
+    b snaps_mark_as
 
 snaps_cc_value:                     @ in place of CC 69's manager getter before its select of the value: marks it
     ldr r0, =MANAGER
@@ -112,7 +149,7 @@ snaps_mark_as:
     strb r2, [r1, #WRAP]
     bx lr
 
-snaps_flip:                         @ the lit one again: the other bank, then select(index) from the record the sound came from
+snaps_flip:                         @ the other bank, then select(index) from the record the sound came from
     mov r2, r1
 snaps_cross:                        @ (manager, index, the index being left)
     push {r3-r11, lr}
@@ -492,8 +529,8 @@ snaps_cameras_unlock:
     blx r3
     cmp.w r8, #0
     beq snaps_cameras_done
-    movs r0, #0                     @ the stock cameras are drawn on the next paint
-    movs r1, #1
+    movs r0, #1                     @ the stock cameras are drawn on the next paint: a full one, as a partial one redrew only the
+    movs r1, #1                     @ camera nodes, over a named snapshot's label text, which then showed as scraps [seen on unit]
     ldr r3, =REDRAW
     blx r3
 snaps_cameras_done:
@@ -635,6 +672,151 @@ snaps_copy:                         @ (to, from): a record
     ldr r3, =MEMCPY
     bx r3
 
+@ Smart Latch: around the footswitch event handler (event, its object), for FS1..FS3 in Snapshot mode, with the setting On. Snapshot
+@ mode selects on the release (so that footswitch pairs can do other things); Smart Latch selects on the press instead, as the
+@ footswitch's own select would (snaps_select), unless the stock press selected already, and drops the release's select (L_SKIP).
+@ The release, after a hold of HOLD_US, goes back to the snapshot the press left, if nothing has selected another meanwhile, as
+@ MIDI CC 69 would select it (either bank). A second snapshot footswitch pressed while one is held cancels it: the pair is the stock's.
+snaps_fs_before:
+    push {r4, r5, r6, lr}
+    bl snaps_fs_key
+    mov r5, r0
+    mov r6, r1
+    adr.w r4, snaps_latch
+    cmp r6, #EV_PRESS
+    beq snaps_fs_press
+    cmp r6, #EV_RELEASE
+    bne snaps_fs_out
+    ldrb r0, [r4, #L_STATE]             @ the release of the footswitch held
+    cmp r0, #0
+    beq snaps_fs_out
+    ldrb r0, [r4, #L_K]
+    cmp r0, r5
+    bne snaps_fs_out
+    movs r0, #0
+    strb r0, [r4, #L_STATE]
+    ldr r3, =CLOCK
+    blx r3
+    ldr r1, [r4, #L_TIME]
+    subs r0, r0, r1
+    ldr r1, =HOLD_US
+    cmp r0, r1
+    bls snaps_fs_out                    @ a tap: it latches
+    bl snaps_abs
+    ldrb r1, [r4, #L_NOW]
+    cmp r0, r1
+    bne snaps_fs_out                    @ another snapshot was selected while it was held
+    ldrb r1, [r4, #L_PREV]
+    cmp r0, r1
+    beq snaps_fs_out
+    ldr r0, =MANAGER
+    adr.w r2, snaps_data
+    movs r3, #VALUE
+    strb r3, [r2, #WRAP]
+    bl snaps_cc_select
+    b snaps_fs_out
+snaps_fs_press:
+    movs r0, #0
+    strb r0, [r4, #L_SKIP]
+    ldrb r0, [r4, #L_STATE]
+    cmp r0, #0
+    bne snaps_fs_cancel                 @ a second snapshot footswitch while one is held
+    movw r0, #SETTING_MORE_SNAPSHOTS_LATCH
+    movs r1, #SETTING_MORE_SNAPSHOTS_LATCH_MAX
+    movs r2, #SETTING_MORE_SNAPSHOTS_LATCH_DEFAULT
+    bl hxtra_setting_get
+    cmp r0, #0
+    beq snaps_fs_out
+    strb r5, [r4, #L_K]
+    bl snaps_abs
+    strb r0, [r4, #L_PREV]
+    strb r0, [r4, #L_NOW]
+    ldr r3, =CLOCK
+    blx r3
+    str r0, [r4, #L_TIME]
+    movs r0, #1
+    strb r0, [r4, #L_STATE]
+    b snaps_fs_out
+snaps_fs_cancel:
+    movs r0, #0
+    strb r0, [r4, #L_STATE]
+snaps_fs_out:
+    pop {r4, r5, r6, pc}
+
+snaps_fs_after:
+    push {r4, r5, r6, lr}
+    bl snaps_fs_key
+    mov r5, r0
+    mov r6, r1
+    adr.w r4, snaps_latch
+    cmp r6, #EV_RELEASE
+    bne snaps_fs_after_press
+    movs r0, #0                         @ the release is done: no select of it is left to drop
+    strb r0, [r4, #L_SKIP]
+    b snaps_fs_done
+snaps_fs_after_press:
+    cmp r6, #EV_PRESS
+    bne snaps_fs_done
+    ldrb r0, [r4, #L_STATE]
+    cmp r0, #0
+    beq snaps_fs_done
+    ldrb r0, [r4, #L_K]
+    cmp r0, r5
+    bne snaps_fs_done
+    bl snaps_abs
+    ldrb r1, [r4, #L_PREV]
+    cmp r0, r1
+    bne snaps_fs_now                    @ the stock press selected: nothing to do
+    movw r0, #SETTING_MORE_SNAPSHOTS_FS_BANK
+    movs r1, #SETTING_MORE_SNAPSHOTS_FS_BANK_MAX
+    movs r2, #SETTING_MORE_SNAPSHOTS_FS_BANK_DEFAULT
+    bl hxtra_setting_get
+    add.w r0, r0, r0, lsl #1
+    add r0, r5
+    ldrb r1, [r4, #L_PREV]
+    cmp r0, r1
+    beq snaps_fs_done                   @ the lit one: left to the stock release, for Reselect Snapshot
+    ldr r0, =MANAGER
+    mov r1, r5
+    bl snaps_select_go
+    movs r0, #1
+    strb r0, [r4, #L_SKIP]
+    bl snaps_abs
+snaps_fs_now:
+    strb r0, [r4, #L_NOW]
+snaps_fs_done:
+    pop {r4, r5, r6, pc}
+
+snaps_fs_key:                       @ (event) -> r0 footswitch 0..2 and r1 the event's type, or r1 0: not a snapshot footswitch's
+    ldrb r2, [r0]
+    cmp r2, #1
+    bne snaps_fs_not
+    ldrb r2, [r0, #1]
+    subs r2, #KEY_FS1
+    cmp r2, #3
+    bhs snaps_fs_not
+    ldr r3, =FS_FUNCTIONS
+    ldrb.w r3, [r3, r2, lsl #1]
+    cmp r3, #FN_SNAPSHOT
+    bne snaps_fs_not
+    ldr r1, [r0, #4]
+    mov r0, r2
+    bx lr
+snaps_fs_not:
+    movs r0, #0xff
+    movs r1, #0
+    bx lr
+
+snaps_abs:                          @ -> r0 the current snapshot, 0..5 (3..5 in bank B)
+    adr.w r0, snaps_data
+    ldrb r0, [r0]
+    add.w r0, r0, r0, lsl #1
+    ldr r1, =MANAGER
+    ldrb.w r1, [r1, #CUR]
+    add r0, r1
+    bx lr
+
+HXTRA_SETTING_GET
 .ltorg
 .balign 4
 snaps_top:
@@ -655,6 +837,8 @@ snaps_file_head:                    @ key 0x64, bin16 of FILE_LEN (big-endian), 
     .byte FILE_KEY, 0xc5, FILE_LEN >> 8, FILE_LEN & 0xff, 'H', 'X', '6', 'B', 1, 0, 0, 0
 snaps_data:                         @ 0 bank B live, 1 snaps_shadow holds bank B, 2 flipped to bank A for a save, 3 cameras to redraw,
     .word 0, 0                      @ 4 bank B written to a file, 5 WRAP, 6 bank B read from a file, 7 the map's new count
+snaps_latch:                        @ Smart Latch: L_STATE, L_K, L_PREV, L_NOW, then L_TIME, then L_SKIP
+    .word 0, 0, 0
 snaps_temp:
     .space REC
 snaps_shadow:                       @ the bank not live: three records as the manager's
