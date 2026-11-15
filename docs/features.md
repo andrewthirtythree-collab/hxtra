@@ -11,7 +11,7 @@ Everything HXtra adds to the HX Stomp, where to find it, and every setting. The 
 | [Breathing line](#breathing-line) | Home screen: the line between the signal flow and the knobs · Global Settings > Breathing Line | `HX_BREATHING_LINE=1` |
 | [Real block names](#real-block-names) | Model browser and Edit view: each block's title · no settings | `HX_REAL_NAMES=1` |
 | [Long press](#long-press) | FS1–FS5 in Stomp footswitch mode · Global Settings > Footswitches, pages 2 to 5 | `HX_LONG_PRESS=1` |
-| [More snapshots](#more-snapshots) | The snapshot footswitches, with Footswitch Mode on Snapshot · no settings | `HX_MORE_SNAPSHOTS=1` |
+| [More snapshots](#more-snapshots) | MIDI CC 69, and the snapshot footswitches with Footswitch Mode on Snapshot · Global Settings > Footswitches > Snapshots FS1-3 | `HX_MORE_SNAPSHOTS=1` |
 | [Metronome](#metronome) | Model browser: Looper > Metronome > Metronome · the block's knobs | `HX_CLICK=1` |
 | [GR meter](#gr-meter) | Home screen, lit by a compressor · knobs on six compressors | `HX_GR=1` |
 | [Boot screen](#boot-screen-hx-stomp-only) | The screen at power-on · set when you build | `--splash`, `--splash-text` |
@@ -131,15 +131,17 @@ In Stomp footswitch mode, each of FS1–FS5 can have a Hold action (Global Setti
 <!-- demo: snapshots -->
 <img src="https://github.com/user-attachments/assets/8ce9d86c-cffb-491e-9c47-0430a02a4af7" width="100%" alt="Snapshots 1 to 3, the lit footswitch again for 4 to 6, and again back to 1 to 3">
 
-With Footswitch Mode on Snapshot, the three footswitches select snapshots 1–3 as usual. Press the lit one again and the same footswitches select snapshots 4–6; press the lit one again to come back.
+Six snapshots a preset instead of three. MIDI CC 69 reaches all six, and the three footswitches select either 1–3 or 4–6.
 
+- **MIDI CC 69:** values 0–2 select snapshots 1–3 and values 3–5 select snapshots 4–6. Selecting 4–6 on a preset that has none yet makes them: each starts as a copy of the snapshot you came from. Sending the lit snapshot's own value does what Reselect Snapshot says, as stock.
+- **Footswitches:** with Footswitch Mode on Snapshot, FS1–3 select snapshots 1–3, or 4–6 with **Snapshots FS1-3** on 4-6 (Global Settings > Footswitches, after the other footswitch settings). Pressing the lit one does what Reselect Snapshot says, as stock.
+- **Smart Latch:** with **SmrtLatch** On (the default; Global Settings > Footswitches, after Snapshots FS1-3), a snapshot footswitch held longer than 350 ms goes back to the snapshot you were on when you let go, from either bank, including one MIDI selected. A tap latches as usual. It stays on the new snapshot if something else (MIDI, another footswitch) selected a snapshot while you held it.
 - **Which bank you're in:** in 4–6, the camera icon at the top right and the footswitch labels show 4, 5 or 6.
-- **New snapshots:** the first time you flip to a preset's 4–6, each one starts as a copy of the snapshot you flipped from. Edit them as any snapshot: snapshot-controlled parameters, block bypass, tempo and names are kept per snapshot.
+- **New snapshots:** edit 4–6 as any snapshot: snapshot-controlled parameters, block bypass, tempo and names are kept per snapshot.
 - **Saving:** a save keeps all six with the preset. Saving while in 4–6, you hear the matching snapshot of 1–3 for a moment, as the save writes 1–3 first.
 - **Stock firmware and HX Edit:** a preset saved with 4–6 still loads on a stock firmware, as snapshots 1–3, and the stock firmware drops 4–6 if it saves the preset again. HX Edit opens, exports and imports these presets, but its exports (`.hlx`) and backups (`.hxb`) hold snapshots 1–3 only. Snapshots 4–6 live on the HX Stomp.
-- **Next and previous:** once a preset has snapshots 4–6 (saved with it, or made by a flip since it loaded), the SnpshtUp and SnpshtDn footswitch functions and MIDI CC 69's next and previous (values 8 and 9) step through all six: next on 3 goes to 4 and next on 6 to 1; previous on 1 goes to 6 and previous on 4 to 3. A preset with only 1–3 wraps within them, as stock.
-- **MIDI CC 69:** values 0–2 select snapshots 1–3 and values 3–5 select snapshots 4–6, whichever bank you're in. Selecting 4–6 on a preset that has none yet makes them as a flip does. Sending the lit snapshot's own value does what Reselect Snapshot says, as stock.
-- **What else changes:** pressing the lit snapshot footswitch no longer does what Reselect Snapshot says. HX Edit's snapshot buttons work within the bank you're in.
+- **Next and previous:** once a preset has snapshots 4–6 (saved with it, or made since it loaded), the SnpshtUp and SnpshtDn footswitch functions and MIDI CC 69's next and previous (values 8 and 9) step through all six: next on 3 goes to 4 and next on 6 to 1; previous on 1 goes to 6 and previous on 4 to 3. A preset with only 1–3 wraps within them, as stock.
+- **HX Edit:** its snapshot buttons work within the bank you're in.
 
 ## Metronome
 

@@ -192,11 +192,12 @@ https://github.com/user-attachments/assets/50b5cd91-f578-4252-a1df-4b73d8ca1995
 
 ### <img src="docs/assets/icons/snapshots.svg" width="104" height="32" align="top" alt=""> More snapshots
 
-*No settings*
+*Global Settings › Footswitches*
 
-- Six snapshots a preset: press the lit snapshot footswitch again to flip between snapshots 1–3 and 4–6.
+- Six snapshots a preset. MIDI CC 69 selects any of the six directly: values 0–2 for snapshots 1–3, 3–5 for 4–6.
+- **Snapshots FS1-3** (1-3, 4-6): which snapshots the three footswitches select with Footswitch Mode on Snapshot. Pressing the lit one does what Reselect Snapshot says, as stock.
+- **SmrtLatch** (Off, On; On by default): hold a snapshot footswitch longer than 350 ms and it goes back to the snapshot you were on when you let go, as a momentary. A tap latches as usual.
 - Once a preset has snapshots 4–6, next and previous snapshot (SnpshtUp, SnpshtDn, MIDI CC 69) step through all six: next on 3 goes to 4, and next on 6 back to 1.
-- MIDI CC 69 selects any of the six directly: values 0–2 for snapshots 1–3, 3–5 for 4–6.
 
 <!-- demo: snapshots -->
 <details>
