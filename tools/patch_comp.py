@@ -20,6 +20,7 @@ import zlib
 import patch_amp as pa
 import nam_multi
 import patch_click
+import patch_keygate
 
 ASM = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src', 'sharc', 'frame_probe.asm')
 
@@ -339,10 +340,10 @@ def dsp_place():
     dm = lay.b3_to
     pm = nam_multi.NW3 - (-(dm + n_dm - nam_multi.NW3) * 2 // 3)
     pm += pm & 1
-    click = patch_click.pm_base(patch_click.kernel_size(), lay)
-    if nw(pm + n_pm + (n_pm & 1)) > nw(click):
+    floor = patch_keygate.place(lay)[0]           # the Keyed Gate's words, then its kernel, then the Metronome's
+    if nw(pm + n_pm + (n_pm & 1)) > floor:
         raise SystemExit(f'the GR DSP code ({n_dm} words, {n_pm} instructions from {dm:#x}) does not fit under the '
-                         f'Metronome\'s kernel ({click:#x})')
+                         f'Keyed Gate\'s words ({floor:#x})')
     return dm, pm
 
 

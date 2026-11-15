@@ -237,6 +237,17 @@ https://github.com/user-attachments/assets/f25be41c-3ab0-45a1-87fa-99cd50194933
 
 </details>
 
+### <img src="docs/assets/icons/keyed-gate.svg" width="35" height="28" align="top" alt=""> Keyed Gate (command-line build only: `HX_KEYGATE=1`)
+
+*New block: Dynamics › Mono › Keyed Gate*
+
+A noise gate after the amp that opens and closes on the clean guitar's level, as an NS-2 in the 4-cable method, in one block. Turn **Input Gate** On in the Input block: that is its key.
+
+- **Key** (Input, Self): Input keys from the Input block's gate; Self gates on its own input.
+- **Open Threshold**, **Close Threshold** (−96 … 0 dB): it opens at Open and stays open down to Close.
+- **Hold** (10 ms … 0.8 s) and **Decay** (10 ms … 4 s): how long it stays open, and how fast it closes.
+- **Type** (Smooth, Hard): Smooth fades a note out (a 1:4 expander under Close); Hard closes all the way.
+
 ### <img src="docs/assets/icons/real-names.svg" width="28" height="28" align="top" alt=""> Real block names (optional, off unless you tick it on the setup page)
 
 *No settings*

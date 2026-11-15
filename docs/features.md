@@ -13,6 +13,7 @@ Everything HXtra adds to the HX Stomp, where to find it, and every setting. The 
 | [Long press](#long-press) | FS1–FS5 in Stomp footswitch mode · Global Settings > Footswitches, pages 2 to 5 | `HX_LONG_PRESS=1` |
 | [More snapshots](#more-snapshots) | The snapshot footswitches, with Footswitch Mode on Snapshot · no settings | `HX_MORE_SNAPSHOTS=1` |
 | [Metronome](#metronome) | Model browser: Looper > Metronome > Metronome · the block's knobs | `HX_CLICK=1` |
+| [Keyed Gate](#keyed-gate) | Model browser: Dynamics > Mono > Keyed Gate · the block's knobs | `HX_KEYGATE=1` |
 | [GR meter](#gr-meter) | Home screen, lit by a compressor · knobs on six compressors | `HX_GR=1` |
 | [Boot screen](#boot-screen-hx-stomp-only) | The screen at power-on · set when you build | `--splash`, `--splash-text` |
 | [NAM A2 Lite](#nam-a2-lite) | Model browser: Amp > NAM | always on |
@@ -157,6 +158,23 @@ A click track in time with the tempo, as a block: add it from the model browser,
 
 - **The beat** starts when the block does, and a new tempo or Time counts from the last beat. Tapping the tempo doesn't yet move the beat onto your taps, and [BPM](#bpm)'s dot blinks with the TAP ring, not with the click.
 - **Presets** store the block as model 181, as the earlier builds that listed it under Modulation did, so presets made with them keep it.
+
+## Keyed Gate
+
+A noise gate that listens to the clean guitar while it gates the signal after the amp, as a Boss NS-2 in the loop or a ZUUL with its key input, in one block. Add it from the model browser, Dynamics > Mono > Keyed Gate, where the noise is: after the drives, or after the FX Loop block that returns from the amp (4-cable method).
+
+The key is the Input block's: turn **Input Gate** On in the Input block. The Keyed Gate then opens and closes on the clean guitar's level, not on its own input, so a high-gain amp's hiss and hum can't hold it open. The Input block's own gate still gates the guitar as it always does; set its Threshold to −96 dB to leave the guitar ungated and use it only as the key, or set it as you would an NS-2's send side.
+
+| Knob | Values | What it does |
+|---|---|---|
+| **Key** | **Input** (default), Self | Input: the Input block's clean guitar. Self: its own input, as a plain gate. With the Input block's gate Off it uses its own input too. |
+| **Open Threshold** | −96 … 0 dB (default **−50**) | The gate opens when the key's level reaches it. |
+| **Close Threshold** | −96 … 0 dB (default **−60**) | Once open, it stays open down to this level (no higher than Open). |
+| **Hold** | 10 ms … 0.8 s (default **10 ms**) | How long it stays open after the level falls under Close. |
+| **Decay** | 10 ms … 4 s (default **0.1 s**) | How fast the level falls whenever the gate turns it down. It opens in about half a millisecond. |
+| **Type** | **Smooth** (default), Hard | Smooth: under Close it turns the level down 4 dB for every dB the key falls (a 1:4 expander), so a note fades away naturally instead of being cut. Hard: after Hold it closes all the way. |
+
+The level is a peak level that falls over 20 ms, so the gate does not chatter on a low note. The stock Noise Gate block runs the same gate code as the Input block: put one **before** the Keyed Gate, not after it, or the Keyed Gate keys from it instead.
 
 ## GR meter
 
